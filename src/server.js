@@ -56,7 +56,7 @@ const TelemetrySchema = z.object({
    3. MONGODB SETUP (TimeSeries Optimized)
 ====================================================== */
 mongoose
-  .connect(process.env.MONGO_URI, {
+  .connect(env.MONGO_URI, {
     serverSelectionTimeoutMS: 5000, // Don't hang forever if DB is down
     socketTimeoutMS: 45000, // Close sockets after 45 seconds of inactivity
   })
@@ -137,7 +137,7 @@ mqttClient.on("message", async (topic, message) => {
 
     // Update Cache
     lastKnownState = cleanData;
-
+    console.log(cleanData);
     // Broadcast to UI
     io.emit("farm_data_update", cleanData);
 
@@ -226,8 +226,8 @@ app.post("/api/pump", (req, res) => {
 /* ======================================================
    7. INITIALIZATION & SHUTDOWN
 ====================================================== */
-httpServer.listen(PORT, "0.0.0.0", () => {
-  console.log(`🚀 farm server running on port ${PORT}`);
+httpServer.listen(env.PORT, "0.0.0.0", () => {
+  console.log(`🚀 farm server running on port ${env.PORT}`);
 });
 
 process.on("unhandledRejection", (reason, promise) => {
