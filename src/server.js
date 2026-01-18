@@ -172,6 +172,10 @@ io.on("connection", (socket) => {
   }
 });
 
+// Helper: Async Error Wrapper
+const asyncHandler = (fn) => (req, res, next) =>
+  Promise.resolve(fn(req, res, next)).catch(next);
+
 /* ======================================================
    7. API ENDPOINTS
 ====================================================== */
@@ -202,50 +206,62 @@ app.get(
 );
 
 // Get Graph Data (Last 24 Hours)
-app.get("/api/trends", async (req, res) => {
-  try {
-    const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    const data = await TelemetryModel.find({
-      timestamp: { $gte: dayAgo },
-    })
-      .sort({ timestamp: 1 })
-      .lean();
+app.get(
+  "/api/trends",
+  asyncHandler(async (req, res) => {
+    try {
+      const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const data = await TelemetryModel.find({
+        timestamp: { $gte: dayAgo },
+      })
+        .sort({ timestamp: 1 })
+        .lean();
 
-    res.json(data);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+      res.json(data);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  }),
+);
 
 // Control the Pump
-app.post("/api/pump", (req, res) => {
-  const { action, duration } = req.body; // duration in seconds
+app.post(
+  "/api/pump",
+  asyncHandler(async (req, res) => {
+    const { action, duration } = req.body; // duration in seconds
 
-  let mqttPayload = "";
-  if (action === "ON") mqttPayload = "PUMP_ON";
-  else if (action === "OFF") mqttPayload = "PUMP_OFF";
-  else if (action === "AUTO") mqttPayload = "AUTO";
-  else return res.status(400).json({ error: "Invalid action" });
+    let mqttPayload = "";
+    if (action === "ON") mqttPayload = "PUMP_ON";
+    else if (action === "OFF") mqttPayload = "PUMP_OFF";
+    else if (action === "AUTO") mqttPayload = "AUTO";
+    else return res.status(400).json({ error: "Invalid action" });
 
-  mqttClient.publish(CONSTANTS.TOPICS.CMD, mqttPayload, { qos: 1 });
+    mqttClient.publish(CONSTANTS.TOPICS.CMD, mqttPayload, { qos: 1 });
 
-  // Handle Auto-Off Timer
-  if (action === "ON" && duration) {
-    if (pumpTimers.has(CONSTANTS.NODE_ID))
-      clearTimeout(pumpTimers.get(CONSTANTS.NODE_ID));
+    // Handle Auto-Off Timer
+    if (action === "ON" && duration) {
+      if (pumpTimers.has(CONSTANTS.NODE_ID))
+        clearTimeout(pumpTimers.get(CONSTANTS.NODE_ID));
 
-    const timer = setTimeout(
-      () => {
-        mqttClient.publish(CONSTANTS.TOPICS.CMD, "PUMP_OFF");
-        pumpTimers.delete(CONSTANTS.NODE_ID);
-      },
-      Math.min(duration, 3600) * 1000,
-    ); // Cap at 1 hour
+      const timer = setTimeout(
+        () => {
+          mqttClient.publish(CONSTANTS.TOPICS.CMD, "PUMP_OFF");
+          pumpTimers.delete(CONSTANTS.NODE_ID);
+        },
+        Math.min(duration, 3600) * 1000,
+      ); // Cap at 1 hour
 
-    pumpTimers.set(CONSTANTS.NODE_ID, timer);
-  }
+      pumpTimers.set(CONSTANTS.NODE_ID, timer);
+    }
 
-  res.json({ success: true, command: mqttPayload });
+    res.json({ success: true, command: mqttPayload });
+  }),
+);
+
+// --- Global Error Handler ---
+app.use((err, req, res, next) => {
+  console.error(err);
+  res.status(500).json({ error: "Internal Server Error" });
 });
 
 /* ======================================================
