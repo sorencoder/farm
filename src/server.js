@@ -55,12 +55,16 @@ const TelemetrySchema = z.object({
 /* ======================================================
    3. MONGODB SETUP (TimeSeries Optimized)
 ====================================================== */
-mongoose.connect(env.MONGO_URI);
-mongoose.connection.once("open", () => console.log("🗄 MongoDB connected"));
-
-mongoose.connection.on("error", (err) =>
-  console.error("❌ MongoDB error:", err.message),
-);
+mongoose
+  .connect(process.env.MONGO_URI, {
+    serverSelectionTimeoutMS: 5000, // Don't hang forever if DB is down
+    socketTimeoutMS: 45000, // Close sockets after 45 seconds of inactivity
+  })
+  .then(() => console.log("🗄️ Database Connected"))
+  .catch((err) => {
+    console.error("❌ Initial DB connection error:", err);
+    process.exit(1); // Force Render to restart the app
+  });
 
 const TelemetryModel = mongoose.model(
   "Telemetry",
@@ -222,8 +226,19 @@ app.post("/api/pump", (req, res) => {
 /* ======================================================
    7. INITIALIZATION & SHUTDOWN
 ====================================================== */
-httpServer.listen(env.PORT, () => {
-  console.log(`🚀 Server running on port ${env.PORT}`);
+httpServer.listen(PORT, "0.0.0.0", () => {
+  console.log(`🚀 farm server running on port ${PORT}`);
+});
+
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("❌ Unhandled Rejection at:", promise, "reason:", reason);
+  // Application specific logging, then crash to let Render restart the instance
+  process.exit(1);
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("❌ Uncaught Exception:", err);
+  process.exit(1);
 });
 
 const gracefulShutdown = () => {
