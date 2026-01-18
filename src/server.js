@@ -175,6 +175,31 @@ io.on("connection", (socket) => {
 /* ======================================================
    7. API ENDPOINTS
 ====================================================== */
+//HEALTH
+
+app.get("/health", (req, res) => {
+  res.json({
+    status: "ok",
+    mqtt: mqttClient.connected,
+    mongo: mongoose.connection.readyState === 1,
+    uptime: process.uptime(),
+  });
+});
+
+// History: Get raw data points
+app.get(
+  "/api/history",
+  asyncHandler(async (req, res) => {
+    const limit = Math.min(Number(req.query.limit) || 100, 1000);
+
+    const data = await Telemetry.find({ "metadata.nodeId": CONSTANTS.NODE_ID })
+      .sort({ timestamp: -1 })
+      .limit(limit)
+      .lean(); // .lean() skips hydrating Mongoose documents (Huge CPU saver)
+
+    res.json(data.reverse());
+  }),
+);
 
 // Get Graph Data (Last 24 Hours)
 app.get("/api/trends", async (req, res) => {
