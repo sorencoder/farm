@@ -173,14 +173,14 @@ app.use(
     credentials: true,
   }),
 );
-/* ✅ Handle preflight explicitly */
-app.options("*", cors());
 app.use(express.json());
+
+const httpServer = createServer(app);
 
 /* ✅ Socket.IO CORS */
 const io = new Server(httpServer, {
   cors: {
-    origin: [process.env.FRONTEND_URL],
+    origin: [process.env.FRONTEND_URL, "http://localhost:3000"],
     methods: ["GET", "POST"],
   },
   transports: ["websocket"],
