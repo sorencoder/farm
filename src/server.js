@@ -180,13 +180,13 @@ const io = new Server(httpServer, {
   transports: ["polling", "websocket"],
 });
 
-io.on("connection", (socket) => {
-  console.log("🔌 UI connected:", socket.id);
+// io.on("connection", (socket) => {
+//   console.log("🔌 UI connected:", socket.id);
 
-  if (lastKnownState) {
-    socket.emit("telemetry:init", lastKnownState);
-  }
-});
+//   if (lastKnownState) {
+//     socket.emit("telemetry:init", lastKnownState);
+//   }
+// });
 
 /* ======================================================
    7. API ROUTES
