@@ -138,8 +138,20 @@ mqttClient.on("message", async (topic, message) => {
     // Update Cache
     lastKnownState = cleanData;
     console.log(cleanData);
+
+    const frontendPayload = {
+      s_raw: cleanData.soil_raw,
+      s_pct: cleanData.soil_pct,
+      s_temp: cleanData.soil_temp,
+      a_temp: cleanData.air_temp,
+      hum: cleanData.humidity,
+      pump: cleanData.pump_on,
+      man: cleanData.manual,
+      life: cleanData.pump_life,
+    };
+
     // Broadcast to UI
-    io.emit("farm_data_update", cleanData);
+    io.emit("telemetry:update", frontendPayload);
 
     // Persist to DB
     await TelemetryModel.create({
@@ -168,7 +180,7 @@ const io = new Server(httpServer, {
 // Send cached data immediately when a user joins
 io.on("connection", (socket) => {
   if (lastKnownState) {
-    socket.emit("initial_data", lastKnownState);
+    socket.emit("telemetry:init", lastKnownState);
   }
 });
 
@@ -196,10 +208,12 @@ app.get(
   asyncHandler(async (req, res) => {
     const limit = Math.min(Number(req.query.limit) || 100, 1000);
 
-    const data = await Telemetry.find({ "metadata.nodeId": CONSTANTS.NODE_ID })
+    const data = await TelemetryModel.find({
+      "metadata.nodeId": CONSTANTS.NODE_ID,
+    })
       .sort({ timestamp: -1 })
       .limit(limit)
-      .lean(); // .lean() skips hydrating Mongoose documents (Huge CPU saver)
+      .lean(); // Huge CPU saver
 
     res.json(data.reverse());
   }),
