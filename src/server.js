@@ -151,7 +151,6 @@ mqttClient.on("message", async (topic, message) => {
 
     lastKnownState = clean;
     lastMqttAt = Date.now();
-
     io.emit("telemetry:update", toFrontendPayload(clean));
 
     await TelemetryModel.create({
