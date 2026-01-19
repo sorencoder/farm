@@ -11,9 +11,7 @@ import "dotenv/config";
    1. CONFIGURATION & ENV VALIDATION
 ====================================================== */
 const env = {
-  MQTT_URL:
-    process.env.MQTT_URL ||
-    "wss://aec7330a6b4a431a938a32666cbc9c16.s1.eu.hivemq.cloud:8884/mqtt",
+  MQTT_URL: process.env.MQTT_URL,
   MQTT_USER: process.env.MQTT_USERNAME,
   MQTT_PASS: process.env.MQTT_PASSWORD,
   MONGO_URI: process.env.MONGO_URI,
