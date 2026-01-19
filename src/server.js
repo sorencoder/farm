@@ -168,7 +168,7 @@ mqttClient.on("message", async (topic, message) => {
 const app = express();
 app.use(
   cors({
-    origin: "https://agrifarm-rw8z.onrender.com",
+    origin: ["https://agrifarm-rw8z.onrender.com", "http://localhost:5173"],
     methods: ["GET", "POST", "OPTIONS"],
   }),
 );
@@ -180,7 +180,7 @@ const httpServer = createServer(app);
 /* ✅ Socket.IO CORS */
 const io = new Server(httpServer, {
   cors: {
-    origin: "https://agrifarm-rw8z.onrender.com",
+    origin: ["https://agrifarm-rw8z.onrender.com", "http://localhost:5173"],
     methods: ["GET", "POST"],
   },
   transports: ["websocket"],
