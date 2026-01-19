@@ -35,14 +35,20 @@ const CONSTANTS = {
 /* ======================================================
    2. TELEMETRY VALIDATION
 ====================================================== */
+const boolish = z.union([
+  z.boolean(),
+  z.number().transform((v) => v === 1),
+  z.string().transform((v) => v === "1" || v === "true"),
+]);
+
 const TelemetrySchema = z.object({
   s_raw: z.number(),
   s_pct: z.number(),
   s_temp: z.number().optional().default(0),
   a_temp: z.number().optional().default(0),
   hum: z.number(),
-  pump: z.boolean().or(z.number()),
-  man: z.boolean().or(z.number()),
+  pump: boolish,
+  man: boolish,
   life: z.number(),
 });
 
@@ -57,36 +63,38 @@ mongoose
     process.exit(1);
   });
 
-const TelemetryModel = mongoose.model(
-  "Telemetry",
-  new mongoose.Schema(
-    {
-      metadata: { nodeId: String },
-      timestamp: Date,
-      soil_raw: Number,
-      soil_pct: Number,
-      soil_temp: Number,
-      air_temp: Number,
-      humidity: Number,
-      pump_on: Boolean,
-      manual: Boolean,
-      pump_life: Number,
+const TelemetrySchemaMongo = new mongoose.Schema(
+  {
+    metadata: { nodeId: String },
+    timestamp: Date,
+    soil_raw: Number,
+    soil_pct: Number,
+    soil_temp: Number,
+    air_temp: Number,
+    humidity: Number,
+    pump_on: Boolean,
+    manual: Boolean,
+    pump_life: Number,
+  },
+  {
+    timeseries: {
+      timeField: "timestamp",
+      metaField: "metadata",
+      granularity: "minutes",
     },
-    {
-      timeseries: {
-        timeField: "timestamp",
-        metaField: "metadata",
-        granularity: "minutes",
-      },
-      expireAfterSeconds: 60 * 60 * 24 * 60,
-    },
-  ),
+    expireAfterSeconds: 60 * 60 * 24 * 60,
+  },
 );
+
+TelemetrySchemaMongo.index({ timestamp: -1 });
+
+const TelemetryModel = mongoose.model("Telemetry", TelemetrySchemaMongo);
 
 /* ======================================================
    4. STATE
 ====================================================== */
 let lastKnownState = null;
+let lastMqttAt = null;
 const pumpTimers = new Map();
 
 /* ======================================================
@@ -115,16 +123,21 @@ const mqttClient = mqtt.connect(env.MQTT_URL, {
 
 mqttClient.on("connect", () => {
   console.log("✅ Connected to HiveMQ");
-  mqttClient.subscribe(CONSTANTS.TOPICS.DATA);
+  mqttClient.subscribe(CONSTANTS.TOPICS.DATA, { qos: 1 });
 });
 
-mqttClient.on("message", async (_, message) => {
+mqttClient.on("reconnect", () => {
+  console.log("🔁 Reconnecting to HiveMQ...");
+});
+
+mqttClient.on("message", async (topic, message) => {
+  if (topic !== CONSTANTS.TOPICS.DATA) return;
+
   try {
     const raw = JSON.parse(message.toString());
     const v = TelemetrySchema.parse(raw);
 
     const clean = {
-      nodeId: CONSTANTS.NODE_ID,
       soil_raw: v.s_raw,
       soil_pct: v.s_pct,
       soil_temp: v.s_temp,
@@ -137,12 +150,12 @@ mqttClient.on("message", async (_, message) => {
     };
 
     lastKnownState = clean;
+    lastMqttAt = Date.now();
 
     io.emit("telemetry:update", toFrontendPayload(clean));
 
     await TelemetryModel.create({
-      metadata: { nodeId: clean.nodeId },
-      timestamp: clean.timestamp,
+      metadata: { nodeId: CONSTANTS.NODE_ID },
       ...clean,
     });
   } catch (err) {
@@ -171,7 +184,7 @@ const io = new Server(httpServer, {
     origin: ["https://agrifarm-rw8z.onrender.com", "http://localhost:5173"],
     methods: ["GET", "POST"],
   },
-  transports: ["websocket"],
+  transports: ["polling", "websocket"],
 });
 
 io.on("connection", (socket) => {
@@ -190,6 +203,7 @@ app.get("/health", (_, res) => {
     status: "ok",
     mqtt: mqttClient.connected,
     mongo: mongoose.connection.readyState === 1,
+    lastMqttAt,
     uptime: process.uptime(),
   });
 });
@@ -213,6 +227,52 @@ app.get("/api/trends", async (_, res) => {
     .lean();
 
   res.json(data);
+});
+
+/* ======================================================
+   9. AGGREGATED CHART DATA (FINAL)
+====================================================== */
+app.get("/api/charts/24h", async (_, res) => {
+  try {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+    const data = await TelemetryModel.aggregate([
+      { $match: { timestamp: { $gte: since } } },
+      {
+        $group: {
+          _id: {
+            $dateTrunc: {
+              date: "$timestamp",
+              unit: "minute",
+              binSize: 5,
+            },
+          },
+          soil_pct: { $avg: "$soil_pct" },
+          soil_temp: { $avg: "$soil_temp" },
+          air_temp: { $avg: "$air_temp" },
+          humidity: { $avg: "$humidity" },
+          pump_on: { $max: "$pump_on" },
+        },
+      },
+      { $sort: { _id: 1 } },
+      {
+        $project: {
+          _id: 0,
+          timestamp: "$_id",
+          soil_pct: { $round: ["$soil_pct", 1] },
+          soil_temp: { $round: ["$soil_temp", 1] },
+          air_temp: { $round: ["$air_temp", 1] },
+          humidity: { $round: ["$humidity", 1] },
+          pump_on: 1,
+        },
+      },
+    ]);
+
+    res.json(data);
+  } catch (err) {
+    console.error("❌ Aggregation error:", err);
+    res.status(500).json({ error: "Aggregation failed" });
+  }
 });
 
 app.post("/api/pump", (req, res) => {
@@ -251,7 +311,7 @@ app.post("/api/pump", (req, res) => {
 });
 
 /* ======================================================
-   9. START SERVER
+   10. START SERVER
 ====================================================== */
 httpServer.listen(env.PORT, "0.0.0.0", () => {
   console.log(`🚀 Server running on port ${env.PORT}`);
