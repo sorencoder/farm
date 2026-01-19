@@ -8,7 +8,7 @@ import { z } from "zod";
 import "dotenv/config";
 
 /* ======================================================
-   1. CONFIGURATION & ENV VALIDATION
+   1. ENV CONFIG
 ====================================================== */
 const env = {
   MQTT_URL: process.env.MQTT_URL,
@@ -19,11 +19,8 @@ const env = {
   PORT: process.env.PORT || 5000,
 };
 
-// Simple check for required env
-if (!env.MONGO_URI || !env.MQTT_USER || !env.FRONTEND_URL) {
-  console.error(
-    "❌ Missing vital environment variables. Check your .env file.",
-  );
+if (!env.MONGO_URI || !env.MQTT_URL || !env.FRONTEND_URL) {
+  console.error("❌ Missing environment variables");
   process.exit(1);
 }
 
@@ -36,32 +33,28 @@ const CONSTANTS = {
 };
 
 /* ======================================================
-   2. DATA VALIDATION (ZOD)
-   Ensures bad sensor data doesn't crash the server or corrupt DB
+   2. TELEMETRY VALIDATION
 ====================================================== */
 const TelemetrySchema = z.object({
-  s_raw: z.number().min(0).max(1024),
-  s_pct: z.number().min(0).max(100),
-  s_temp: z.number().catch(0), // If temp sensor fails, default to 0
-  a_temp: z.number().catch(0),
-  hum: z.number().min(0).max(100),
+  s_raw: z.number(),
+  s_pct: z.number(),
+  s_temp: z.number().optional().default(0),
+  a_temp: z.number().optional().default(0),
+  hum: z.number(),
   pump: z.boolean().or(z.number()),
   man: z.boolean().or(z.number()),
-  life: z.number().nonnegative(),
+  life: z.number(),
 });
 
 /* ======================================================
-   3. MONGODB SETUP (TimeSeries Optimized)
+   3. DATABASE
 ====================================================== */
 mongoose
-  .connect(env.MONGO_URI, {
-    serverSelectionTimeoutMS: 5000, // Don't hang forever if DB is down
-    socketTimeoutMS: 45000, // Close sockets after 45 seconds of inactivity
-  })
-  .then(() => console.log("🗄️ Database Connected"))
+  .connect(env.MONGO_URI)
+  .then(() => console.log("🗄️ MongoDB connected"))
   .catch((err) => {
-    console.error("❌ Initial DB connection error:", err);
-    process.exit(1); // Force Render to restart the app
+    console.error("❌ MongoDB error:", err);
+    process.exit(1);
   });
 
 const TelemetryModel = mongoose.model(
@@ -85,91 +78,87 @@ const TelemetryModel = mongoose.model(
         metaField: "metadata",
         granularity: "minutes",
       },
-      expireAfterSeconds: 60 * 60 * 24 * 60, // 60 Days retention
+      expireAfterSeconds: 60 * 60 * 24 * 60,
     },
   ),
 );
 
 /* ======================================================
-   4. STATE MANAGEMENT
+   4. STATE
 ====================================================== */
-const pumpTimers = new Map(); // Stores active auto-off timeouts
-let lastKnownState = null; // Cache for immediate frontend updates
+let lastKnownState = null;
+const pumpTimers = new Map();
 
 /* ======================================================
-   5. MQTT CLIENT
+   5. HELPERS
+====================================================== */
+const toFrontendPayload = (d) => ({
+  s_raw: d.soil_raw,
+  s_pct: d.soil_pct,
+  s_temp: d.soil_temp,
+  a_temp: d.air_temp,
+  hum: d.humidity,
+  pump: d.pump_on,
+  man: d.manual,
+  life: d.pump_life,
+  timestamp: d.timestamp,
+});
+
+/* ======================================================
+   6. MQTT CLIENT
 ====================================================== */
 const mqttClient = mqtt.connect(env.MQTT_URL, {
   username: env.MQTT_USER,
   password: env.MQTT_PASS,
-  clientId: `backend_${Math.random().toString(16).substring(2, 8)}`,
+  clientId: `backend_${Math.random().toString(16).slice(2)}`,
 });
 
 mqttClient.on("connect", () => {
   console.log("✅ Connected to HiveMQ");
-  // mqttClient.publish(CONSTANTS.TOPICS.DATA, "", { retain: true });
   mqttClient.subscribe(CONSTANTS.TOPICS.DATA);
 });
 
-mqttClient.on("message", async (topic, message) => {
+mqttClient.on("message", async (_, message) => {
   try {
-    const rawData = JSON.parse(message.toString());
-    // console.log(rawData);
+    const raw = JSON.parse(message.toString());
+    const v = TelemetrySchema.parse(raw);
 
-    // Validate and Sanitize
-    const validated = TelemetrySchema.parse(rawData);
-    // console.log(validated);
-
-    const cleanData = {
+    const clean = {
       nodeId: CONSTANTS.NODE_ID,
-      soil_raw: validated.s_raw,
-      soil_pct: validated.s_pct,
-      soil_temp: validated.s_temp,
-      air_temp: validated.a_temp,
-      humidity: validated.hum,
-      pump_on: !!validated.pump,
-      manual: !!validated.man,
-      pump_life: validated.life,
+      soil_raw: v.s_raw,
+      soil_pct: v.s_pct,
+      soil_temp: v.s_temp,
+      air_temp: v.a_temp,
+      humidity: v.hum,
+      pump_on: !!v.pump,
+      manual: !!v.man,
+      pump_life: v.life,
       timestamp: new Date(),
     };
 
-    // Update Cache
-    lastKnownState = cleanData;
-    console.log(cleanData);
+    lastKnownState = clean;
 
-    const frontendPayload = {
-      s_raw: cleanData.soil_raw,
-      s_pct: cleanData.soil_pct,
-      s_temp: cleanData.soil_temp,
-      a_temp: cleanData.air_temp,
-      hum: cleanData.humidity,
-      pump: cleanData.pump_on,
-      man: cleanData.manual,
-      life: cleanData.pump_life,
-    };
+    io.emit("telemetry:update", toFrontendPayload(clean));
 
-    // Broadcast to UI
-    io.emit("telemetry:update", frontendPayload);
-
-    // Persist to DB
     await TelemetryModel.create({
-      metadata: { nodeId: cleanData.nodeId },
-      timestamp: cleanData.timestamp,
-      ...cleanData,
+      metadata: { nodeId: clean.nodeId },
+      timestamp: clean.timestamp,
+      ...clean,
     });
   } catch (err) {
-    console.warn("⚠️ Ignored invalid MQTT message:", err.message);
+    console.warn("⚠️ Invalid MQTT payload ignored:", err.message);
   }
 });
 
 /* ======================================================
-   6. SERVER & SOCKETS
+   7. SERVER + SOCKET.IO
 ====================================================== */
 const app = express();
+
 app.use(
   cors({
     origin: ["https://agrifarm-rw8z.onrender.com", "http://localhost:5173"],
-    methods: ["GET", "POST", "OPTIONS"],
+    methods: ["GET", "POST"],
   }),
 );
 
@@ -177,7 +166,6 @@ app.use(express.json());
 
 const httpServer = createServer(app);
 
-/* ✅ Socket.IO CORS */
 const io = new Server(httpServer, {
   cors: {
     origin: ["https://agrifarm-rw8z.onrender.com", "http://localhost:5173"],
@@ -186,23 +174,18 @@ const io = new Server(httpServer, {
   transports: ["websocket"],
 });
 
-// Send cached data immediately when a user joins
 io.on("connection", (socket) => {
+  console.log("🔌 UI connected:", socket.id);
+
   if (lastKnownState) {
-    socket.emit("telemetry:init", lastKnownState);
+    socket.emit("telemetry:init", toFrontendPayload(lastKnownState));
   }
 });
 
-// Helper: Async Error Wrapper
-const asyncHandler = (fn) => (req, res, next) =>
-  Promise.resolve(fn(req, res, next)).catch(next);
-
 /* ======================================================
-   7. API ENDPOINTS
+   8. API ROUTES
 ====================================================== */
-//HEALTH
-
-app.get("/health", (req, res) => {
+app.get("/health", (_, res) => {
   res.json({
     status: "ok",
     mqtt: mqttClient.connected,
@@ -211,115 +194,65 @@ app.get("/health", (req, res) => {
   });
 });
 
-// History: Get raw data points
-app.get(
-  "/api/history",
-  asyncHandler(async (req, res) => {
-    const limit = Math.min(Number(req.query.limit) || 100, 1000);
+app.get("/api/history", async (_, res) => {
+  const data = await TelemetryModel.find()
+    .sort({ timestamp: -1 })
+    .limit(100)
+    .lean();
 
-    const data = await TelemetryModel.find({
-      "metadata.nodeId": CONSTANTS.NODE_ID,
-    })
-      .sort({ timestamp: -1 })
-      .limit(limit)
-      .lean(); // Huge CPU saver
+  res.json(data.reverse());
+});
 
-    res.json(data.reverse());
-  }),
-);
+app.get("/api/trends", async (_, res) => {
+  const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
-// Get Graph Data (Last 24 Hours)
-app.get(
-  "/api/trends",
-  asyncHandler(async (req, res) => {
-    try {
-      const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
-      const data = await TelemetryModel.find({
-        timestamp: { $gte: dayAgo },
-      })
-        .sort({ timestamp: 1 })
-        .lean();
+  const data = await TelemetryModel.find({
+    timestamp: { $gte: dayAgo },
+  })
+    .sort({ timestamp: 1 })
+    .lean();
 
-      res.json(data);
-    } catch (err) {
-      res.status(500).json({ error: err.message });
-    }
-  }),
-);
+  res.json(data);
+});
 
-// Control the Pump
-app.post(
-  "/api/pump",
-  asyncHandler(async (req, res) => {
-    const { action, duration } = req.body; // duration in seconds
+app.post("/api/pump", (req, res) => {
+  const { action, duration } = req.body;
 
-    let mqttPayload = "";
-    if (action === "ON") mqttPayload = "PUMP_ON";
-    else if (action === "OFF") mqttPayload = "PUMP_OFF";
-    else if (action === "AUTO") mqttPayload = "AUTO";
-    else return res.status(400).json({ error: "Invalid action" });
+  const cmd =
+    action === "ON"
+      ? "PUMP_ON"
+      : action === "OFF"
+        ? "PUMP_OFF"
+        : action === "AUTO"
+          ? "AUTO"
+          : null;
 
-    mqttClient.publish(CONSTANTS.TOPICS.CMD, mqttPayload, { qos: 1 });
+  if (!cmd) return res.status(400).json({ error: "Invalid action" });
 
-    // Handle Auto-Off Timer
-    if (action === "ON" && duration) {
-      if (pumpTimers.has(CONSTANTS.NODE_ID))
-        clearTimeout(pumpTimers.get(CONSTANTS.NODE_ID));
+  mqttClient.publish(CONSTANTS.TOPICS.CMD, cmd, { qos: 1 });
 
-      const timer = setTimeout(
-        () => {
-          mqttClient.publish(CONSTANTS.TOPICS.CMD, "PUMP_OFF");
-          pumpTimers.delete(CONSTANTS.NODE_ID);
-        },
-        Math.min(duration, 3600) * 1000,
-      ); // Cap at 1 hour
-
-      pumpTimers.set(CONSTANTS.NODE_ID, timer);
+  if (action === "ON" && duration) {
+    if (pumpTimers.has(CONSTANTS.NODE_ID)) {
+      clearTimeout(pumpTimers.get(CONSTANTS.NODE_ID));
     }
 
-    res.json({ success: true, command: mqttPayload });
-  }),
-);
+    const t = setTimeout(
+      () => {
+        mqttClient.publish(CONSTANTS.TOPICS.CMD, "PUMP_OFF");
+        pumpTimers.delete(CONSTANTS.NODE_ID);
+      },
+      Math.min(duration, 3600) * 1000,
+    );
 
-// --- Global Error Handler ---
-app.use((err, req, res, next) => {
-  console.error(err);
-  res.status(500).json({ error: "Internal Server Error" });
+    pumpTimers.set(CONSTANTS.NODE_ID, t);
+  }
+
+  res.json({ success: true, command: cmd });
 });
 
 /* ======================================================
-   7. INITIALIZATION & SHUTDOWN
+   9. START SERVER
 ====================================================== */
 httpServer.listen(env.PORT, "0.0.0.0", () => {
-  console.log(`🚀 farm server running on port ${env.PORT}`);
+  console.log(`🚀 Server running on port ${env.PORT}`);
 });
-
-process.on("unhandledRejection", (reason, promise) => {
-  console.error("❌ Unhandled Rejection at:", promise, "reason:", reason);
-  // Application specific logging, then crash to let Render restart the instance
-  process.exit(1);
-});
-
-process.on("uncaughtException", (err) => {
-  console.error("❌ Uncaught Exception:", err);
-  process.exit(1);
-});
-
-const gracefulShutdown = () => {
-  console.log("\n🛑 Shutting down...");
-
-  mqttClient.end();
-
-  // Clear all timers
-  pumpTimers.forEach((t) => clearTimeout(t));
-
-  httpServer.close(() => {
-    mongoose.connection.close(false).then(() => {
-      console.log("👋 Cleanup complete.");
-      process.exit(0);
-    });
-  });
-};
-
-process.on("SIGINT", gracefulShutdown);
-process.on("SIGTERM", gracefulShutdown);
