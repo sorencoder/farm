@@ -170,9 +170,9 @@ app.use(
   cors({
     origin: "https://agrifarm-rw8z.onrender.com",
     methods: ["GET", "POST", "OPTIONS"],
-    credentials: true,
   }),
 );
+
 app.use(express.json());
 
 const httpServer = createServer(app);
