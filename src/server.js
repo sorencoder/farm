@@ -168,7 +168,7 @@ mqttClient.on("message", async (topic, message) => {
 const app = express();
 app.use(
   cors({
-    origin: [process.env.FRONTEND_URL],
+    origin: [env.FRONTEND_URL],
     methods: ["GET", "POST", "OPTIONS"],
     credentials: true,
   }),
@@ -180,7 +180,7 @@ const httpServer = createServer(app);
 /* ✅ Socket.IO CORS */
 const io = new Server(httpServer, {
   cors: {
-    origin: [process.env.FRONTEND_URL],
+    origin: [env.FRONTEND_URL],
     methods: ["GET", "POST"],
   },
   transports: ["websocket"],
