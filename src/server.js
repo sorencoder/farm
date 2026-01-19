@@ -137,9 +137,10 @@ mqttClient.on("message", async (topic, message) => {
     lastKnownState = clean;
     lastMqttAt = Date.now();
 
-    console.log("📡 TELEMETRY", clean);
+    // console.log("📡 TELEMETRY", clean);
 
-    io.emit("telemetry:update", clean);
+    const i = io.emit("telemetry:update", clean);
+    console.log(i);
 
     await TelemetryModel.create({
       metadata: { nodeId: CONSTANTS.NODE_ID },
