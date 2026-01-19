@@ -98,22 +98,7 @@ let lastMqttAt = null;
 const pumpTimers = new Map();
 
 /* ======================================================
-   5. HELPERS
-====================================================== */
-const toFrontendPayload = (d) => ({
-  s_raw: d.soil_raw,
-  s_pct: d.soil_pct,
-  s_temp: d.soil_temp,
-  a_temp: d.air_temp,
-  hum: d.humidity,
-  pump: d.pump_on,
-  man: d.manual,
-  life: d.pump_life,
-  timestamp: d.timestamp,
-});
-
-/* ======================================================
-   6. MQTT CLIENT
+   5. MQTT CLIENT
 ====================================================== */
 const mqttClient = mqtt.connect(env.MQTT_URL, {
   username: env.MQTT_USER,
@@ -151,8 +136,10 @@ mqttClient.on("message", async (topic, message) => {
 
     lastKnownState = clean;
     lastMqttAt = Date.now();
-    console.log(clean);
-    io.emit("telemetry:update", toFrontendPayload(clean));
+
+    console.log("📡 TELEMETRY", clean);
+
+    io.emit("telemetry:update", clean);
 
     await TelemetryModel.create({
       metadata: { nodeId: CONSTANTS.NODE_ID },
@@ -164,13 +151,19 @@ mqttClient.on("message", async (topic, message) => {
 });
 
 /* ======================================================
-   7. SERVER + SOCKET.IO
+   6. SERVER + SOCKET.IO
 ====================================================== */
 const app = express();
 
+const ALLOWED_ORIGINS = [
+  "https://agrifarm-rw8z.onrender.com",
+  "https://farm-dv9a.onrender.com",
+  "http://localhost:5173",
+];
+
 app.use(
   cors({
-    origin: ["https://agrifarm-rw8z.onrender.com", "http://localhost:5173"],
+    origin: ALLOWED_ORIGINS,
     methods: ["GET", "POST"],
   }),
 );
@@ -181,7 +174,7 @@ const httpServer = createServer(app);
 
 const io = new Server(httpServer, {
   cors: {
-    origin: ["https://agrifarm-rw8z.onrender.com", "http://localhost:5173"],
+    origin: ALLOWED_ORIGINS,
     methods: ["GET", "POST"],
   },
   transports: ["polling", "websocket"],
@@ -191,12 +184,12 @@ io.on("connection", (socket) => {
   console.log("🔌 UI connected:", socket.id);
 
   if (lastKnownState) {
-    socket.emit("telemetry:init", toFrontendPayload(lastKnownState));
+    socket.emit("telemetry:init", lastKnownState);
   }
 });
 
 /* ======================================================
-   8. API ROUTES
+   7. API ROUTES
 ====================================================== */
 app.get("/health", (_, res) => {
   res.json({
@@ -229,9 +222,6 @@ app.get("/api/trends", async (_, res) => {
   res.json(data);
 });
 
-/* ======================================================
-   9. AGGREGATED CHART DATA (FINAL)
-====================================================== */
 app.get("/api/charts/24h", async (_, res) => {
   try {
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
@@ -311,7 +301,7 @@ app.post("/api/pump", (req, res) => {
 });
 
 /* ======================================================
-   10. START SERVER
+   8. START SERVER
 ====================================================== */
 httpServer.listen(env.PORT, "0.0.0.0", () => {
   console.log(`🚀 Server running on port ${env.PORT}`);
